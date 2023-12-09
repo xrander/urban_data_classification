@@ -15,16 +15,47 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F, dpi = 360)
 
 library("tidyverse")
 library("janitor")
 library("tidymodels")
 library("vip")
 
-theme_set(theme_minimal)
+theme_set(theme_minimal())
 ```
-I want to build a model for the classification of different part of an urban setting. We can predict if an object is a car, tree, building, and so using this model.
+
+I want to build a model for the classification of different part of an [urban setting](). We can predict if an object is a car, tree, building, and so using this model.
+
+## Exploratory Data Analysis
+
+```{r}
+test_data <- read_csv("https://raw.githubusercontent.com/xrander/urban_data_classification/master/Data%20Science/Personal%20Project/urban_data_classification/testing.csv")
+
+train_data <- read_csv("https://raw.githubusercontent.com/xrander/urban_data_classification/master/Data%20Science/Personal%20Project/urban_data_classification/training.csv")
+```
+
+First we compare the training and test data to see if they are similar, we join them then carry out the EDA properly.
+```{r}
+compare_df_cols_same(test_data, train_data)
+
+compare_df_cols(test_data, train_data)
+```
+
+```{r}
+urban_data <- bind_rows(train_data, test_data) %>% 
+  clean_names() %>% 
+  mutate_if(is.character, factor)
+
+duplicate_entry <- urban_data %>% 
+  get_dupes()
+```
+
+```{r}
+
+```
+
+
 
 
 
