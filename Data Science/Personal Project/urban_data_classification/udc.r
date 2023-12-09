@@ -5,6 +5,7 @@ setwd("~/Documents/Data Science/Personal Project/urban_data_classification")
 library("tidyverse")
 library("janitor")
 library("tidymodels")
+library(vip)
 
 test_data <- read_csv("testing.csv")
 train_data <- read_csv("training.csv")
@@ -53,6 +54,7 @@ urban_data %>%
                 vjust = 0.001))
 
 
+skimr::skim(urban_data)
 
 # Set seed to ensure reproducible result
 set.seed(120)
@@ -66,14 +68,20 @@ urban_data_split <- initial_split(urban_data,
 urban_train <- training(urban_data_split)
 urban_test <- testing(urban_data_split)
 
-urban_train_resample <- vfold_cv(urban_train, v = 10)
 
-urban_trurban_train_rec <-
+urban_train_rec <-
   recipe(class ~., data = urban_train) %>% 
-  step_normalize(all_numeric_predictors())
+  step_normalize(all_numeric_predictors()) %>% 
+  step_zv(all_predictors())
 
-# Start work flow
-knn_workflow <- workflow()
+
+urban_train_prep <- prep(urban_train_rec)
+
+urban_train_prep
+
+urban_train_juiced <- juice(urban_train_prep)
+
+skimr::skim(urban_train_juiced)
 
 # Define nearest neighbour model
 knn_model <- nearest_neighbor(neighbors = tune(),
@@ -81,110 +89,178 @@ knn_model <- nearest_neighbor(neighbors = tune(),
                               engine = "kknn",
                               mode = "classification")
 
-
-
-# add model to workflow
-knn_workflow <- knn_workflow %>%
-  add_model(knn_model) 
-
-knn_workflow <- knn_workflow %>% 
+# Start work flow
+knn_workflow <- workflow() %>% 
+  add_model(knn_model) %>% 
   add_recipe(urban_train_rec)
 
 
-knn_grid <- tune_grid(
+set.seed(2344)
+
+urban_train_resample <- vfold_cv(urban_train, v = 10)
+
+set.seed(2333)
+doParallel::registerDoParallel()
+
+# hyperparameter tuning
+knn_tune <- tune_grid(
   knn_workflow,
   resamples = urban_train_resample
 )
 
-knn_grid %>%
+knn_tune %>%
   collect_metrics()
 
-knn_grid %>% 
+knn_tune %>% 
   show_best("accuracy")
 
-knn_grid %>% 
+knn_tune %>% 
   show_best("roc_auc")
 
 
-# random_forest
-rand_forest()
+knn_tune %>% 
+  collect_metrics() %>% 
+  select(neighbors, .metric, mean) %>% 
+  clean_names() %>% 
+  ggplot(aes(neighbors, mean, col = metric))+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~metric, scales = "free")
+
+knn_grid_search <- grid_regular(
+  neighbors(range = c(10,14)),
+  levels = 5
+  )
+
+knn_tune_grid <- tune_grid(
+  knn_workflow,
+  resamples = urban_train_resample,
+  grid = knn_grid_search
+)
 
 
-# fit the model
-knn_fit <- fit_resamples(knn_workflow,
-                         urban_train_resample)
+knn_best_auc <- knn_tune_grid %>% 
+  select_best("roc_auc")
+
+knn_final_model <- 
+  finalize_model(
+    knn_model,
+    knn_best_auc
+    )
+
+knn_final_wf <- workflow() %>% 
+  add_recipe(urban_train_rec) %>% 
+  add_model(knn_final_model) 
+
+knn_final_res <- knn_final_wf %>% 
+  last_fit(urban_data_split)
+
+knn_final_res %>% 
+  collect_predictions() %>% 
+  mutate(prediction = ifelse(class ==.pred_class, "correct", "wrong")) %>% 
+  bind_cols(urban_test) %>% 
+  ggplot(aes(ndvi, mean_g, col = prediction))+
+  geom_point(alpha = 0.7)
 
 
-# Resampling
-vfold_cv(urban_train, v = 10, repeats = 10)
+######################################################### # Random Forest
 
-# split train
-urban_train %>%
-  count(class) %>%
-  pull(n)
-
-urban_test %>%
-  count(class)%>%
-  pull(n)
-
-
-grid <- expand_grid(k = seq(2, 25, 1))
-
-knn_model <- nearest_neighbor(
-  neighbors = 10,
-  dist_power = 2) %>%
-  set_engine("kknn") %>%
-  set_mode("classification")
-
-urban_train_fit <- knn_model %>%
-  fit(class~., data = urban_train)
-
-urban_train_fit
-
-
-
-print(knn_value) #k = 13
-
-k = knn_value$bestTune$k
-
-
-# using knn to predict
-urban_class_pred <- knn(train = urban_train[, -1], # select all rows except the class variable
-                       test = urban_test[,-1],
-                       cl = as.matrix(urban_train[, 1]), # select the class variable
-                       k = k) # use best k value from hypertuning
-
-
-# Confusion Matrix
-table(prediction = urban_class_pred, actual = urban_test$class)
-
-# Accuracy
-mean(urban_class_pred == urban_test$class)
-
-tibble("x" = testing_data$BrdIndx,
-       "y" = testing_data$Round,
-       "actual" = testing_data$class,
-       "prediction" = urban_class_pred) %>%
-  pivot_longer(cols = c("actual", "prediction"),
-               names_to = "type",
-               values_to = "value",
-               values_drop_na = T) %>%
-  filter(value == c("grass", "concrete", "tree", "asphalt", "soil", "building")) %>%
-  ggplot(aes(x, y, color = value))+
-  geom_point(size = 2)+
-  geom_smooth(method = lm, se = F, alpha = 0.4)+
-  facet_wrap(~type)
-
-#########################################################
-
-rf_spec <- rand_forest(mode = "classification",
+rf_model <- rand_forest(mode = "classification",
                        mtry = tune(),
                        trees = 1000,
-                       engine = "randomForest",
+                       engine = "ranger",
                        min_n = tune())
 
-tune_grid(
-  class ~ .,
-  model = rf_spec,
-  resamples = 
+rf_workflow <- workflow() %>% 
+  add_variables(outcomes = class,
+                predictors = everything()) %>% 
+  add_model(rf_model)
+  
+set.seed(234)
+
+doParallel::registerDoParallel()
+
+rf_tune <- tune_grid(
+  rf_workflow,
+  resamples = urban_train_resample,
+  grid = 20
 )
+
+rf_tune %>% 
+  collect_metrics()
+
+rf_tune %>% 
+  show_best("roc_auc")
+
+rf_tune %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mtry, min_n, mean) %>% 
+  pivot_longer(mtry:min_n,
+               names_to ="parameter",
+               values_to = "values") %>% 
+  ggplot(aes(values, mean, col = parameter))+
+  geom_point()+
+  facet_wrap(~parameter, scales = "free_x")
+
+
+set.seed(345)
+
+rf_grid <- grid_regular(
+  mtry(range = c(130, 147)),
+  min_n(range = c(4, 10)),
+  levels = 5
+  )
+
+
+rf_tune_grid <- tune_grid(rf_workflow,
+                            resamples = urban_train_resample,
+                            grid = rf_grid
+                            )
+
+rf_tune_grid %>% 
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>% 
+  select(mtry, min_n, mean) %>% 
+  mutate(min_n = factor(min_n)) %>% 
+  ggplot(aes(mtry, mean, col = min_n))+
+  geom_point()+
+  geom_line()
+
+rf_tune_grid %>% 
+  show_best("roc_auc")
+
+rf_tune_grid %>% 
+  show_best("accuracy")
+
+best_tune_auc <- rf_tune_grid %>% 
+  select_best("roc_auc")
+
+rf_final_model <-
+  finalize_model(
+    rf_model,
+    best_tune_auc
+  )
+
+
+rf_final_model %>% 
+  set_engine("ranger", importance ="permutation") %>% 
+  fit(class ~ .,
+      data = urban_train) %>% 
+  vip(geom = "point")
+
+
+final_wf <- workflow() %>% 
+  add_variables(outcomes = class,
+                predictors = everything()) %>% 
+  add_model(rf_final_model)
+
+final_rf_res <- final_wf %>% 
+  last_fit(urban_data_split)
+
+final_rf_res %>% 
+  collect_predictions() %>% 
+  mutate(prediction= if_else(class == .pred_class, "correct", "wrong")) %>% 
+  bind_cols(urban_test) %>% 
+  ggplot(aes(ndvi,mean_g, color =prediction))+
+  geom_point(alpha = 0.7)
