@@ -90,25 +90,25 @@ urban_test <- testing(urban_data_split)
 
 ```
 
-# Build Models
-
-## KNN Model
 ### Feature Engineering
 ```{r}
-urban_train_fea_eng <-
+urban_train_rec <-
   recipe(class ~., data = urban_train) %>% 
   step_zv(all_predictors()) %>% 
   steo_nzv(all_predictors()) %>% 
   step_normalize(all_numeric_predictors())
 
-urban_train_prep <- prep(urban_train_fea_eng)
+urban_train_prep <- prep(urban_train_rec)
 
 urban_train_prep
 
 urban_train_juiced <- juice(urban_train_prep)
 ```
 
-### KNN Modeling Workflow
+# Build Models
+
+## KNN Model
+ KNN Modeling Workflow
 ```{r}
 knn_model <- nearest_neighbor(neighbors = tune(),
                               dist_power = 2,
@@ -121,13 +121,6 @@ knn_workflow <- workflow() %>%
 ```
 
 
-### Resamples for Model Evaluation
-```{r}
-set.seed(2344)
-
-urban_train_resample <- vfold_cv(urban_train, v = 10)
-```
-
 
 ## Random Forest
 RF Modeling Workflow
@@ -139,14 +132,92 @@ rf_model <- rand_forest(mode = "classification",
                        min_n = tune())
 
 rf_workflow <- workflow() %>% 
-  add_variables(outcomes = class,
-                predictors = everything()) %>% 
+  add_recipe(urban_train_rec) %>% 
   add_model(rf_model)
 ```
 
+### Resamples for Model Evaluation
+```{r}
+set.seed(2344)
 
-###Hyperparameter Tuning
+urban_train_resample <- vfold_cv(urban_train, v = 10)
+```
 
+
+
+
+apply the best tune
+```{r}
+knn_best_auc <- knn_tune_grid %>% 
+  select_best("roc_auc")
+
+knn_final_model <- 
+  finalize_model(
+    knn_model,
+    knn_best_auc
+    )
+
+knn_final_wf <- workflow() %>% 
+  add_recipe(urban_train_rec) %>% 
+  add_model(knn_final_model) 
+
+knn_final_res <- knn_final_wf %>% 
+  last_fit(urban_data_split)
+```
+
+
+
+### KNN Hyperparameter Tuning
+```{r}
+set.seed(2333)
+doParallel::registerDoParallel() # for parallel computing
+
+# hyperparameter tuning
+knn_tune <- tune_grid(
+  knn_workflow,
+  resamples = urban_train_resample
+  )
+
+knn_tune %>%
+  collect_metrics()
+
+knn_tune %>% 
+  show_best("accuracy")
+
+knn_tune %>% 
+  show_best("roc_auc")
+
+
+knn_tune %>% 
+  collect_metrics() %>% 
+  select(neighbors, .metric, mean) %>% 
+  clean_names() %>% 
+  ggplot(aes(neighbors, mean, col = metric))+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~metric, scales = "free")
+```
+
+### KNN Hyperparameter grid search
+```{r}
+knn_grid_search <- grid_regular(
+  neighbors(range = c(10,14)),
+  levels = 5
+  )
+
+knn_tune_grid <- tune_grid(
+  knn_workflow,
+  resamples = urban_train_resample,
+  grid = knn_grid_search
+)
+
+autoplot(knn_tune_grid, metric = "roc_auc")+
+  labs(x = "Nearest Neighbor",
+       y = "roc_auc",
+       title = "Area under curve based on Nearest neighbor")
+```
+
+### RF Hyperparameter Tuning
 ```{r}
 set.seed(234)
 
@@ -183,7 +254,7 @@ rf_tune %>%
   facet_wrap(~parameter, scales = "free_x")
 ```
 
-### Tuning with Grid Search
+### RF Tuning with Grid Search
 ```{r}
 set.seed(345)
 
@@ -194,14 +265,12 @@ rf_grid <- grid_regular(
   )
 ```
 
-
 ```{r}
 rf_tune_grid <- tune_grid(rf_workflow,
                             resamples = urban_train_resample,
                             grid = rf_grid
                             )
 ```
-
 
 ```{r}
 rf_tune_grid %>% 
@@ -214,7 +283,6 @@ rf_tune_grid %>%
   geom_line()
 ```
 
-
 ```{r}
 rf_tune_grid %>% 
   show_best("roc_auc")
@@ -226,7 +294,6 @@ best_tune_auc <- rf_tune_grid %>%
   select_best("roc_auc")
 ```
 
-
 applying best tuning values
 ```{r}
 rf_final_model <-
@@ -235,7 +302,6 @@ rf_final_model <-
     best_tune_auc
   )
 ```
-
 
 ### Fit the final Random Forest model workflow
 ```{r}
@@ -246,19 +312,38 @@ rf_final_model %>%
   vip(geom = "point")
 
 
-final_wf <- workflow() %>% 
-  add_variables(outcomes = class,
-                predictors = everything()) %>% 
+rf_final_wf <- workflow() %>% 
+  urban_train_rec %>% 
   add_model(rf_final_model)
 
-
-final_rf_res <- final_wf %>% 
+rf_final_res <- rf_final_wf %>% 
   last_fit(urban_data_split)
 ```
 
 ## Model Evaluation
 ```{r}
-final_rf_res %>% 
+knn_final_res %>% 
+  collect_predictions() %>% 
+  mutate(prediction = ifelse(class ==.pred_class, "correct", "wrong")) %>% 
+  bind_cols(urban_test) %>% 
+  ggplot(aes(ndvi, mean_g, col = prediction))+
+  geom_point(alpha = 0.7)
+```
+
+
+```{r}
+knn_predict <- knn_final_res %>% 
+  collect_predictions() %>% 
+  clean_names()
+
+conf_mat(knn_predict, truth = class, estimate = pred_class)
+
+sens(knn_predict, truth = class, estimate = pred_class)
+accuracy(knn_predict, truth = class, estimate = pred_class)
+```
+
+```{r}
+rf_final_res %>% 
   collect_predictions() %>% 
   mutate(prediction= if_else(class == .pred_class, "correct", "wrong")) %>% 
   bind_cols(urban_test) %>% 
@@ -266,15 +351,33 @@ final_rf_res %>%
   geom_point(alpha = 0.7)
 ```
 
-
 ```{r}
-rf_predict <- final_rf_res %>%
+rf_predict <- rf_final_res %>%
   collect_predictions() %>% 
   clean_names()
 
 conf_mat(rf_predict, truth = class, estimate = pred_class)
 sens(rf_predict, truth = class, estimate = pred_class)
-
 ```
 
 
+
+```{r}
+knn_predict <- knn_predict %>% 
+  select(pred_class, class) %>% 
+  rename("knn_prediction" = "pred_class",
+         "actual_class" = "class")
+
+rf_predict <- rf_predict %>% 
+  select(pred_class, class) %>% 
+  rename("rf_prediction" = "pred_class",
+         "actual_class" = "class")
+
+knn_predict %>% 
+  left_join(rf_predict, by = "actual_class") %>%
+  select(actual_class, everything()) %>% 
+  pivot_longer(cols = knn_prediction:rf_prediction,
+               names_to = "model",
+               values_to = "prediction") %>% 
+  
+```
