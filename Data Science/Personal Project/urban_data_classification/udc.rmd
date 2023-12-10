@@ -25,10 +25,10 @@ library("vip")
 theme_set(theme_minimal())
 ```
 
-I want to build a model for the classification of different part of an [urban setting](). We can predict if an object is a car, tree, building, and so using this model.
+I want to build a model for the classification of different part of an [urban setting](https://raw.githubusercontent.com/xrander/urban_data_classification/master/Data%20Science/Personal%20Project/urban_data_classification/urban_data.csv). We can predict if an object is a car, tree, building, and so on using this model.
 
-## Exploratory Data Analysis
-
+# Exploratory Data Analysis
+The data is partitioned into test and train data already, but we will combine and resplit to prevent class imbalance of the outcomes
 ```{r}
 test_data <- read_csv("https://raw.githubusercontent.com/xrander/urban_data_classification/master/Data%20Science/Personal%20Project/urban_data_classification/testing.csv")
 
@@ -38,41 +38,243 @@ train_data <- read_csv("https://raw.githubusercontent.com/xrander/urban_data_cla
 First we compare the training and test data to see if they are similar, we join them then carry out the EDA properly.
 ```{r}
 compare_df_cols_same(test_data, train_data)
-
-compare_df_cols(test_data, train_data)
 ```
+
 
 ```{r}
 urban_data <- bind_rows(train_data, test_data) %>% 
   clean_names() %>% 
   mutate_if(is.character, factor)
-
-duplicate_entry <- urban_data %>% 
-  get_dupes()
 ```
+We check for the data properties
+```{r}
+skimr::skim(urban_data)
+```
+
+There are no missing data, we check for duplicates
 
 ```{r}
+unique(duplicated(urban_data))
+
+urban_data <- urban_data[!duplicated(urban_data),]
+```
+
+
+```{r}
+urban_data %>%
+  group_by(class) %>% # group b
+  summarize(frequency = n()) %>%
+  ggplot(aes(class, frequency))+
+  geom_bar(stat = "identity",
+           fill = "burlywood3")+
+  theme_bw()+
+  ggtitle("Frequency Distribution of Classes")+
+  geom_text(aes(label = frequency,
+                vjust = 0.001))
+```
+
+The frequency shows there's a class imbalance, which we have to take into consideration during data budgeting/splitting
+
+
+# Data Budgeting
+```{r}
+set.seed(120) # to ensure reproducibility
+
+urban_data_split <- initial_split(urban_data,
+                                  # set strata to compensate for class imbalance
+                                  strata = class, 
+                                  prop = 0.7)
+
+urban_train <- training(urban_data_split)
+urban_test <- testing(urban_data_split)
+
+```
+
+# Build Models
+
+## KNN Model
+### Feature Engineering
+```{r}
+urban_train_fea_eng <-
+  recipe(class ~., data = urban_train) %>% 
+  step_zv(all_predictors()) %>% 
+  steo_nzv(all_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+
+urban_train_prep <- prep(urban_train_fea_eng)
+
+urban_train_prep
+
+urban_train_juiced <- juice(urban_train_prep)
+```
+
+### KNN Modeling Workflow
+```{r}
+knn_model <- nearest_neighbor(neighbors = tune(),
+                              dist_power = 2,
+                              engine = "kknn",
+                              mode = "classification")
+
+knn_workflow <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(urban_train_rec)
+```
+
+
+### Resamples for Model Evaluation
+```{r}
+set.seed(2344)
+
+urban_train_resample <- vfold_cv(urban_train, v = 10)
+```
+
+
+## Random Forest
+RF Modeling Workflow
+```{r}
+rf_model <- rand_forest(mode = "classification",
+                       mtry = tune(),
+                       trees = 1000,
+                       engine = "ranger",
+                       min_n = tune())
+
+rf_workflow <- workflow() %>% 
+  add_variables(outcomes = class,
+                predictors = everything()) %>% 
+  add_model(rf_model)
+```
+
+
+###Hyperparameter Tuning
+
+```{r}
+set.seed(234)
+
+rf_tune <- tune_grid(
+  rf_workflow,
+  resamples = urban_train_resample,
+  grid = 20
+)
+```
+
+
+```{r}
+rf_tune %>% 
+  collect_metrics()
+```
+
+
+```{r}
+rf_tune %>% 
+  show_best("roc_auc")
+```
+
+
+```{r}
+rf_tune %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  select(mtry, min_n, mean) %>% 
+  pivot_longer(mtry:min_n,
+               names_to ="parameter",
+               values_to = "values") %>% 
+  ggplot(aes(values, mean, col = parameter))+
+  geom_point()+
+  facet_wrap(~parameter, scales = "free_x")
+```
+
+### Tuning with Grid Search
+```{r}
+set.seed(345)
+
+rf_grid <- grid_regular(
+  mtry(range = c(130, 147)),
+  min_n(range = c(4, 10)),
+  levels = 5
+  )
+```
+
+
+```{r}
+rf_tune_grid <- tune_grid(rf_workflow,
+                            resamples = urban_train_resample,
+                            grid = rf_grid
+                            )
+```
+
+
+```{r}
+rf_tune_grid %>% 
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>% 
+  select(mtry, min_n, mean) %>% 
+  mutate(min_n = factor(min_n)) %>% 
+  ggplot(aes(mtry, mean, col = min_n))+
+  geom_point()+
+  geom_line()
+```
+
+
+```{r}
+rf_tune_grid %>% 
+  show_best("roc_auc")
+
+rf_tune_grid %>% 
+  show_best("accuracy")
+
+best_tune_auc <- rf_tune_grid %>% 
+  select_best("roc_auc")
+```
+
+
+applying best tuning values
+```{r}
+rf_final_model <-
+  finalize_model(
+    rf_model,
+    best_tune_auc
+  )
+```
+
+
+### Fit the final Random Forest model workflow
+```{r}
+rf_final_model %>% 
+  set_engine("ranger", importance ="permutation") %>% 
+  fit(class ~ .,
+      data = urban_train) %>% 
+  vip(geom = "point")
+
+
+final_wf <- workflow() %>% 
+  add_variables(outcomes = class,
+                predictors = everything()) %>% 
+  add_model(rf_final_model)
+
+
+final_rf_res <- final_wf %>% 
+  last_fit(urban_data_split)
+```
+
+## Model Evaluation
+```{r}
+final_rf_res %>% 
+  collect_predictions() %>% 
+  mutate(prediction= if_else(class == .pred_class, "correct", "wrong")) %>% 
+  bind_cols(urban_test) %>% 
+  ggplot(aes(ndvi,mean_g, color =prediction))+
+  geom_point(alpha = 0.7)
+```
+
+
+```{r}
+rf_predict <- final_rf_res %>%
+  collect_predictions() %>% 
+  clean_names()
+
+conf_mat(rf_predict, truth = class, estimate = pred_class)
+sens(rf_predict, truth = class, estimate = pred_class)
 
 ```
 
 
-
-
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
-```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
