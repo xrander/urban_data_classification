@@ -95,7 +95,7 @@ urban_test <- testing(urban_data_split)
 urban_train_rec <-
   recipe(class ~., data = urban_train) %>% 
   step_zv(all_predictors()) %>% 
-  steo_nzv(all_predictors()) %>% 
+  step_nzv(all_predictors()) %>% 
   step_normalize(all_numeric_predictors())
 
 urban_train_prep <- prep(urban_train_rec)
@@ -141,30 +141,9 @@ rf_workflow <- workflow() %>%
 set.seed(2344)
 
 urban_train_resample <- vfold_cv(urban_train, v = 10)
+
+urban_train_resample
 ```
-
-
-
-
-apply the best tune
-```{r}
-knn_best_auc <- knn_tune_grid %>% 
-  select_best("roc_auc")
-
-knn_final_model <- 
-  finalize_model(
-    knn_model,
-    knn_best_auc
-    )
-
-knn_final_wf <- workflow() %>% 
-  add_recipe(urban_train_rec) %>% 
-  add_model(knn_final_model) 
-
-knn_final_res <- knn_final_wf %>% 
-  last_fit(urban_data_split)
-```
-
 
 
 ### KNN Hyperparameter Tuning
@@ -197,6 +176,7 @@ knn_tune %>%
   geom_line()+
   facet_wrap(~metric, scales = "free")
 ```
+The accuracy and area under the curve improved between 10 and 14, this will
 
 ### KNN Hyperparameter grid search
 ```{r}
@@ -294,7 +274,27 @@ best_tune_auc <- rf_tune_grid %>%
   select_best("roc_auc")
 ```
 
-applying best tuning values
+### Create workflow for using Best Values
+knn
+```{r}
+knn_best_auc <- knn_tune_grid %>% 
+  select_best("roc_auc")
+
+knn_final_model <- 
+  finalize_model(
+    knn_model,
+    knn_best_auc
+    )
+
+knn_final_wf <- workflow() %>% 
+  add_recipe(urban_train_rec) %>% 
+  add_model(knn_final_model) 
+
+knn_final_res <- knn_final_wf %>% 
+  last_fit(urban_data_split)
+```
+
+rf
 ```{r}
 rf_final_model <-
   finalize_model(
@@ -313,14 +313,14 @@ rf_final_model %>%
 
 
 rf_final_wf <- workflow() %>% 
-  urban_train_rec %>% 
+  add_recipe(urban_train_rec) %>% 
   add_model(rf_final_model)
 
 rf_final_res <- rf_final_wf %>% 
   last_fit(urban_data_split)
 ```
 
-## Model Evaluation
+# Model Evaluation
 ```{r}
 knn_final_res %>% 
   collect_predictions() %>% 
@@ -358,26 +358,8 @@ rf_predict <- rf_final_res %>%
 
 conf_mat(rf_predict, truth = class, estimate = pred_class)
 sens(rf_predict, truth = class, estimate = pred_class)
+accuracy(rf_predict, truth = class, estimate = pred_class)
 ```
 
-
-
-```{r}
-knn_predict <- knn_predict %>% 
-  select(pred_class, class) %>% 
-  rename("knn_prediction" = "pred_class",
-         "actual_class" = "class")
-
-rf_predict <- rf_predict %>% 
-  select(pred_class, class) %>% 
-  rename("rf_prediction" = "pred_class",
-         "actual_class" = "class")
-
-knn_predict %>% 
-  left_join(rf_predict, by = "actual_class") %>%
-  select(actual_class, everything()) %>% 
-  pivot_longer(cols = knn_prediction:rf_prediction,
-               names_to = "model",
-               values_to = "prediction") %>% 
-  
-```
+# Conclusion
+Both nodels are 
