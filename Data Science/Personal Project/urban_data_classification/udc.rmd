@@ -136,7 +136,7 @@ rf_workflow <- workflow() %>%
   add_model(rf_model)
 ```
 
-### Resamples for Model Evaluation
+## Resamples for Model Evaluation
 ```{r}
 set.seed(2344)
 
@@ -145,8 +145,9 @@ urban_train_resample <- vfold_cv(urban_train, v = 10)
 urban_train_resample
 ```
 
+# hyparameter Tuning
 
-### KNN Hyperparameter Tuning
+## KNN Hyperparameter Tuning
 ```{r}
 set.seed(2333)
 doParallel::registerDoParallel() # for parallel computing
@@ -176,9 +177,9 @@ knn_tune %>%
   geom_line()+
   facet_wrap(~metric, scales = "free")
 ```
-The accuracy and area under the curve improved between 10 and 14, this will
+The accuracy and area under the curve improved between 10 and 14 neighbors. These values will be used for as the tune values.
 
-### KNN Hyperparameter grid search
+## KNN Hyperparameter grid search
 ```{r}
 knn_grid_search <- grid_regular(
   neighbors(range = c(10,14)),
@@ -196,8 +197,17 @@ autoplot(knn_tune_grid, metric = "roc_auc")+
        y = "roc_auc",
        title = "Area under curve based on Nearest neighbor")
 ```
+ The figure above shows how auc improves as the neighbors increases. The table below show the best number of neighbors to use for a the model using roc_auc as the metric of evaluation.
+ 
+```{r}
+knn_tune_grid %>% 
+  show_best("roc_auc")
 
-### RF Hyperparameter Tuning
+knn_best_auc <- knn_tune_grid %>% 
+  select_best("roc_auc")
+```
+
+## RF Hyperparameter Tuning
 ```{r}
 set.seed(234)
 
@@ -208,13 +218,13 @@ rf_tune <- tune_grid(
 )
 ```
 
-
+We can choose the best value to use either using accuracy as the metric or using roc_auc as the metric of model evaluation.
 ```{r}
 rf_tune %>% 
   collect_metrics()
 ```
 
-
+The best 5 values for mtry and min_n combination when grid is set to 20 is show below
 ```{r}
 rf_tune %>% 
   show_best("roc_auc")
@@ -233,8 +243,9 @@ rf_tune %>%
   geom_point()+
   facet_wrap(~parameter, scales = "free_x")
 ```
+As seen above, the best tune value is between 4 to 10 for min_n and 130 to 147 for mtry. We tune again using the combination of these values
 
-### RF Tuning with Grid Search
+## RF Tuning with Grid Search
 ```{r}
 set.seed(345)
 
@@ -243,8 +254,11 @@ rf_grid <- grid_regular(
   min_n(range = c(4, 10)),
   levels = 5
   )
+
+rf_grid
 ```
 
+rf_grid displays the number of combination of mtry and min_n to fit through to get the best roc_auc
 ```{r}
 rf_tune_grid <- tune_grid(rf_workflow,
                             resamples = urban_train_resample,
@@ -274,12 +288,9 @@ best_tune_auc <- rf_tune_grid %>%
   select_best("roc_auc")
 ```
 
-### Create workflow for using Best Values
+## Create workflow for using Best Values
 knn
 ```{r}
-knn_best_auc <- knn_tune_grid %>% 
-  select_best("roc_auc")
-
 knn_final_model <- 
   finalize_model(
     knn_model,
@@ -303,15 +314,17 @@ rf_final_model <-
   )
 ```
 
-### Fit the final Random Forest model workflow
+### Feature importance
 ```{r}
 rf_final_model %>% 
   set_engine("ranger", importance ="permutation") %>% 
   fit(class ~ .,
       data = urban_train) %>% 
   vip(geom = "point")
+```
 
 
+```{r}
 rf_final_wf <- workflow() %>% 
   add_recipe(urban_train_rec) %>% 
   add_model(rf_final_model)
@@ -335,11 +348,6 @@ knn_final_res %>%
 knn_predict <- knn_final_res %>% 
   collect_predictions() %>% 
   clean_names()
-
-conf_mat(knn_predict, truth = class, estimate = pred_class)
-
-sens(knn_predict, truth = class, estimate = pred_class)
-accuracy(knn_predict, truth = class, estimate = pred_class)
 ```
 
 ```{r}
@@ -350,16 +358,34 @@ rf_final_res %>%
   ggplot(aes(ndvi,mean_g, color =prediction))+
   geom_point(alpha = 0.7)
 ```
-
+The number of wrong prediction reduces while using randomForest
 ```{r}
 rf_predict <- rf_final_res %>%
   collect_predictions() %>% 
   clean_names()
+```
 
+## Confusion Matrix
+```{r}
+conf_mat(knn_predict, truth = class, estimate = pred_class)
 conf_mat(rf_predict, truth = class, estimate = pred_class)
+```
+
+## Sensitivity
+```{r}
+## Knn
+sens(knn_predict, truth = class, estimate = pred_class)
+
+## random forest
 sens(rf_predict, truth = class, estimate = pred_class)
+```
+
+## Accuracy
+```{r}
+accuracy(knn_predict, truth = class, estimate = pred_class)
+
 accuracy(rf_predict, truth = class, estimate = pred_class)
 ```
 
 # Conclusion
-Both nodels are 
+Both algorithms were able to produce reliable predictions for the urban class. The random forest  algorithm model confusion matrix show little misclassification, better sensitivity and accuracy compared to knn algorithm model. If this is to be deployed into production the randomForest model should be choosen.
